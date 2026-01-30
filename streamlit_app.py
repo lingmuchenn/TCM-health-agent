@@ -64,6 +64,7 @@ def init_state() -> None:
     st.session_state.setdefault("asked", set())
     st.session_state.setdefault("q1_main", "")
     st.session_state.setdefault("q7_extra", "")
+    st.session_state.setdefault("api_key", "")
     # answers[qid] = str
     st.session_state.setdefault("answers", {})
     st.session_state.setdefault("generated", False)
@@ -78,6 +79,7 @@ def reset_state() -> None:
         "asked",
         "q1_main",
         "q7_extra",
+        "api_key",
         "answers",
         "generated",
         "final_output",
@@ -212,6 +214,17 @@ def stream_chat_completion(client: OpenAI, messages: list[dict[str, str]]) -> It
             yield token
 
 
+def get_deepseek_api_key() -> str:
+    """请输入你的DEEPSEEK API密钥"""
+    key = (st.session_state.get("api_key") or "").strip()
+    if key:
+        return key
+    try:
+        return (st.secrets.get("DEEPSEEK_API_KEY", "") or "").strip()
+    except Exception:
+        return ""
+
+
 def ensure_question_asked(q: Question) -> None:
     if q.qid in st.session_state.asked:
         return False
@@ -248,6 +261,15 @@ if st.session_state.stage == 0:
         st.markdown("**操作流程**：**01** 填写基础信息 → **02** 描述症状 → **03** 诊疗建议")
 
 with st.sidebar:
+    st.subheader("模型配置")
+    st.text_input(
+        "",
+        type="password",
+        placeholder="请输入DEEPSEEK API密钥",
+        key="api_key",
+        label_visibility="collapsed",
+    )
+
     st.subheader("基础信息")
     age = st.number_input(
         "年龄",
@@ -268,7 +290,6 @@ with st.sidebar:
             key="menses",
         )
 
-    st.divider()
     if st.button("重新分析（清空聊天）", type="secondary", use_container_width=True, key="reset_sidebar"):
         reset_state()
         st.rerun()
@@ -303,9 +324,9 @@ def run_followup_query(*, user_text: str, age_val: int, gender_val: str, menses_
     with st.chat_message("user"):
         st.markdown(user_text)
 
-    api_key = st.secrets.get("DEEPSEEK_API_KEY", "").strip() if hasattr(st, "secrets") else ""
+    api_key = get_deepseek_api_key()
     if not api_key:
-        append_message("assistant", "未检测到 DeepSeek API Key，请先在 `.streamlit/secrets.toml` 配置。")
+        append_message("assistant", "未检测到 DeepSeek API Key：请在左侧栏输入，或在 `.streamlit/secrets.toml` 配置。")
         st.rerun()
 
     summary = build_structured_summary(
@@ -392,9 +413,9 @@ if st.session_state.stage in (1, 2, 3, 4, 5):
 
 # 生成分析按钮（阶段6才显示；分析完成后不再显示）
 if st.session_state.stage == 6 and not st.session_state.generated:
-    api_key = st.secrets.get("DEEPSEEK_API_KEY", "").strip() if hasattr(st, "secrets") else ""
+    api_key = get_deepseek_api_key()
     if not api_key:
-        st.warning('未检测到 DeepSeek API Key。请在 `.streamlit/secrets.toml` 中配置：`DEEPSEEK_API_KEY="你的key"`。')
+        st.warning("未检测到 DeepSeek API Key。请在左侧栏输入，或在 `.streamlit/secrets.toml` 中配置：`DEEPSEEK_API_KEY=\"你的key\"`。")
 
     col_a, col_b = st.columns([1, 1])
     start_clicked = col_a.button("开始分析", type="primary", use_container_width=True, disabled=not bool(api_key), key="start_analysis")
