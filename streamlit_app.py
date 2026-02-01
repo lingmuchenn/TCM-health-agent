@@ -1,3 +1,7 @@
+"""
+中医养生智能小助手 - Streamlit 应用程序
+该程序通过多阶段问诊获取用户信息，利用 DeepSeek AI 提供中医背景下的健康分析与养生建议。
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -6,18 +10,26 @@ from typing import Iterable, Literal
 import streamlit as st
 from openai import OpenAI
 
-
+# 定义角色类型，仅限于用户和助手
 Role = Literal["user", "assistant"]
 
 
 @dataclass(frozen=True)
 class Question:
+    """
+    问诊问题的数据类
+    :param qid: 问题的唯一标识符
+    :param title: 问题的内容文本（支持 Markdown）
+    :param quick_options: 快捷选择项列表
+    :param detail_placeholder: 底部输入框的占位符提示文案
+    """
     qid: str
     title: str
     quick_options: list[str]
     detail_placeholder: str = ""
 
 
+# AI 模型配置
 BASE_URL = "https://api.deepseek.com"
 MODEL = "deepseek-chat"
 
@@ -26,31 +38,35 @@ ANALYZE_NOW = "基于当前信息直接分析"
 
 Q2_COLD_HOT = Question(
     qid="q2",
-    title="下面的问题用于进一步判断你的整体体质情况。日常更怕冷还是怕热？",
+    title="谢谢，我明白了！为了更贴近你的身体状态，我会继续从一些日常感受入手，慢慢拼凑出整体的调子。\n\n"
+    "**下面的问题没有对错，只需要按你平时最真实的感觉来选即可。**\n\n"
+    "在中医里，怕冷或怕热，常常反映的是身体整体偏向的“底色”。\n"
+    "**请问你日常更怕冷还是怕热？**",
     quick_options=["明显怕冷（喜热饮、手脚凉）", "明显怕热（喜冷饮、易上火）", "冷热都不明显", ANALYZE_NOW],
     detail_placeholder="冬天怕冷夏天怕热",
 )
 Q3_FATIGUE = Question(
     qid="q3",
-    title="日常是否容易感到疲劳乏力？",
+    title="除了冷热感受，精力状态也很能说明身体是否在“透支运行”。"
+    "**请问你日常是否容易感到疲劳乏力？**",
     quick_options=["经常乏力", "几乎不乏力", "偶尔乏力（熬夜/劳累后）", ANALYZE_NOW],
     detail_placeholder="晨起乏力",
 )
 Q4_STOOL = Question(
     qid="q4",
-    title="大便性状更接近哪种？",
+    title="中医常说“脾胃为后天之本”，消化和排便情况，往往是身体内部状态的直接反馈。**请问你最近的大便性状怎么样？**",
     quick_options=["稀溏不成形（或黏马桶）", "干结难解（或排便费力）", "软硬适中（排便顺畅）", ANALYZE_NOW],
     detail_placeholder="每天腹泻 1 次",
 )
 Q5_SLEEP = Question(
     qid="q5",
-    title="睡眠情况更接近哪种？",
+    title="睡眠是身体自我修复的重要时段，它的质量常常和白天的状态相互影响。**请问你最近的睡眠情况怎么样？**",
     quick_options=["入睡困难", "容易惊醒", "睡眠质量好", ANALYZE_NOW],
     detail_placeholder="总是睡不醒",
 )
 Q6_MOOD = Question(
     qid="q6",
-    title="情绪状态更接近哪种？",
+    title="情绪变化不仅是心理感受，在中医里也会反映到身体的运行节奏上。**请问你最近的情绪状态怎么样？**",
     quick_options=["经常烦躁焦虑", "经常低落压抑", "情绪平稳", ANALYZE_NOW],
     detail_placeholder="工作压力大时烦躁",
 )
@@ -59,27 +75,33 @@ QUESTIONS: list[Question] = [Q2_COLD_HOT, Q3_FATIGUE, Q4_STOOL, Q5_SLEEP, Q6_MOO
 
 
 def init_state() -> None:
-    st.session_state.setdefault("messages", [])
-    st.session_state.setdefault("stage", 0)  # 0=主诉, 1-5=问题2-6, 6=问题7(可选)+生成, 7=分析后自由对话
-    st.session_state.setdefault("asked", set())
-    st.session_state.setdefault("q1_main", "")
-    st.session_state.setdefault("q7_extra", "")
-    st.session_state.setdefault("api_key", "")
-    # answers[qid] = str
-    st.session_state.setdefault("answers", {})
-    st.session_state.setdefault("generated", False)
-    st.session_state.setdefault("final_output", "")
-    st.session_state.setdefault("followup_messages", [])  # only used after analysis
+    """
+    初始化 Streamlit 会话状态（session_state）中的各项变量。
+    """
+    st.session_state.setdefault("messages", [])  # 存储对话历史记录
+    st.session_state.setdefault("stage", 0)     # 问诊阶段索引：0=主诉, 1-5=预设问题, 6=补充/分析前, 7=分析后自由对话
+    st.session_state.setdefault("asked", set()) # 记录已在对话框中抛出的问题，避免重复显示
+    st.session_state.setdefault("q1_main", "")  # 存储用户的主诉内容
+    st.session_state.setdefault("q7_extra", "") # 存储用户的问题7补充内容
+    st.session_state.setdefault("api_key", "")  # DeepSeek API 密钥
+    st.session_state.setdefault("age", 20)      # 用户年龄，默认20
+    st.session_state.setdefault("answers", {})  # 存储各个问诊问题的回答 {qid: answer_text}
+    st.session_state.setdefault("generated", False) # 标记是否已生成首次分析报告
+    st.session_state.setdefault("final_output", "")  # 存储 AI 生成的首次完整分析报告文本
+    st.session_state.setdefault("followup_messages", []) # 存储分析报告生成后的自由追问记录
 
 
 def reset_state() -> None:
+    """
+    清空当前的对话和分析状态，将应用重置为初始问诊状态。
+    保留 API 密钥、年龄、性别等基础配置。
+    """
     for k in [
         "messages",
         "stage",
         "asked",
         "q1_main",
         "q7_extra",
-        "api_key",
         "answers",
         "generated",
         "final_output",
@@ -91,16 +113,42 @@ def reset_state() -> None:
 
 
 def append_message(role: Role, content: str) -> None:
+    """
+    向会话历史记录中添加一条新消息。
+    :param role: 消息发送者角色（'user' 或 'assistant'）
+    :param content: 消息文本内容
+    """
     st.session_state.messages.append({"role": role, "content": content})
+
+def role_avatar(role: Role) -> str | None:
+    """
+    根据消息角色返回对应的 Emoji 头像。
+    :param role: 消息发送者角色
+    :return: 对应的图标或 None
+    """
+    if role == "assistant":
+        return "🩺"
+    if role == "user":
+        return "🙂"
+    return None
 
 
 def render_history() -> None:
+    """
+    遍历 session_state.messages 并将对话记录渲染到 Streamlit 页面上。
+    """
     for m in st.session_state.messages:
-        with st.chat_message(m["role"]):
+        with st.chat_message(m["role"], avatar=role_avatar(m["role"])):
             st.markdown(m["content"])
 
 
 def detect_red_flags(text: str) -> list[str]:
+    """
+    在用户输入的文本中检测是否包含预定义的危险信号词。
+    用于在分析前提示用户及时就医。
+    :param text: 用户输入的完整文本内容
+    :return: 命中的危险信号词列表
+    """
     red_flags = [
         "胸痛",
         "呼吸困难",
@@ -123,6 +171,11 @@ def detect_red_flags(text: str) -> list[str]:
 
 
 def format_answer(qid: str) -> str:
+    """
+    获取指定问诊问题的回答文本，若无回答则返回“未填写”。
+    :param qid: 问题标识符
+    :return: 处理后的回答文本
+    """
     return (st.session_state.answers.get(qid) or "").strip() or "未填写"
 
 
@@ -134,6 +187,9 @@ def build_structured_summary(
     q1_main: str,
     q7_extra: str,
 ) -> str:
+    """
+    整合用户填写的全部信息，构建一份结构化的问诊摘要，提交给 AI 进行分析。
+    """
     parts: list[str] = []
     parts.append("【基础信息】")
     parts.append(f"- 年龄：{age if age else '未填写'}")
@@ -159,7 +215,7 @@ def build_structured_summary(
 SYSTEM_PROMPT = """
 【角色】
 - 你是「中医养生智能小助手」。
-- 你的任务是：基于用户主诉、结构化问答与补充说明，从中医养生视角进行状态分析，并给出可执行的健康调理建议。
+- 你的任务是：基于用户主诉、结构化问答与补充说明，从中医养生视角进行状态分析，并给出用户可执行的健康调理建议。使用第二人称的对话，亲切温暖。
 
 【能力边界】
 - 你不是医生，不进行疾病诊断，不下医疗结论，不开处方，不推荐处方药或具体药物剂量。
@@ -201,6 +257,12 @@ SYSTEM_PROMPT = """
 
 
 def stream_chat_completion(client: OpenAI, messages: list[dict[str, str]]) -> Iterable[str]:
+    """
+    调用 DeepSeek 接口进行流式对话生成。
+    :param client: OpenAI 客户端实例
+    :param messages: 构造好的对话消息列表
+    :return: 令牌（token）迭代器
+    """
     stream = client.chat.completions.create(
         model=MODEL,
         messages=messages,
@@ -215,7 +277,10 @@ def stream_chat_completion(client: OpenAI, messages: list[dict[str, str]]) -> It
 
 
 def get_deepseek_api_key() -> str:
-    """请输入你的DEEPSEEK API密钥"""
+    """
+    获取 DeepSeek API 密钥，优先级：session_state > streamlit secrets。
+    :return: 密钥字符串
+    """
     key = (st.session_state.get("api_key") or "").strip()
     if key:
         return key
@@ -225,10 +290,15 @@ def get_deepseek_api_key() -> str:
         return ""
 
 
-def ensure_question_asked(q: Question) -> None:
+def ensure_question_asked(q: Question) -> bool:
+    """
+    确保某个问诊问题已显示在对话流中。若尚未显示，则将其添加至 messages 并更新 asked 集合。
+    :param q: 问题对象
+    :return: 是否新添加了消息
+    """
     if q.qid in st.session_state.asked:
         return False
-    append_message("assistant", f"**{q.title}**")
+    append_message("assistant", q.title)
     st.session_state.asked.add(q.qid)
     return True
 
@@ -237,6 +307,7 @@ st.set_page_config(page_title="中医智能小助手", page_icon="🌿", layout=
 init_state()
 
 st.title("🌿 中医智能小助手")
+
 st.caption("本产品仅为 AI 技术演示，内容仅供参考，不能替代专业医疗诊断。")
 
 st.markdown(
@@ -263,7 +334,7 @@ if st.session_state.stage == 0:
 with st.sidebar:
     st.subheader("模型配置")
     st.text_input(
-        "",
+        "DEEPSEEK API 密钥",
         type="password",
         placeholder="请输入DEEPSEEK API密钥",
         key="api_key",
@@ -275,7 +346,7 @@ with st.sidebar:
         "年龄",
         min_value=0,
         max_value=120,
-        value=st.session_state.get("age", 0),
+        value=st.session_state.get("age", 20),
         step=1,
         help="可不填；填写会让建议更贴合",
         key="age",
@@ -290,7 +361,7 @@ with st.sidebar:
             key="menses",
         )
 
-    if st.button("重新分析（清空聊天）", type="secondary", use_container_width=True, key="reset_sidebar"):
+    if st.button("清空聊天", type="secondary", use_container_width=True, key="reset_sidebar"):
         reset_state()
         st.rerun()
 
@@ -301,6 +372,12 @@ with st.sidebar:
 
 
 def build_followup_model_messages(*, summary: str, analysis_text: str) -> list[dict[str, str]]:
+    """
+    构造分析完成后的自由对话上下文消息列表。
+    :param summary: 结构化问诊摘要
+    :param analysis_text: 之前的 AI 分析结论
+    :return: 消息列表
+    """
     context = (
         "你正在继续与用户对话。以下是该用户的首次问诊信息摘要与此前你给出的分析。\n\n"
         f"{summary}\n\n"
@@ -318,10 +395,13 @@ def build_followup_model_messages(*, summary: str, analysis_text: str) -> list[d
 
 
 def run_followup_query(*, user_text: str, age_val: int, gender_val: str, menses_val: str) -> None:
-    """分析完成后，直接与 LLM 自由对话（会带上首次摘要+首次分析作为上下文）。"""
+    """
+    执行分析报告生成后的自由追问逻辑。
+    带上问诊背景与之前的分析结论进行流式回复。
+    """
     append_message("user", user_text)
     st.session_state.followup_messages.append({"role": "user", "content": user_text})
-    with st.chat_message("user"):
+    with st.chat_message("user", avatar=role_avatar("user")):
         st.markdown(user_text)
 
     api_key = get_deepseek_api_key()
@@ -338,47 +418,58 @@ def run_followup_query(*, user_text: str, age_val: int, gender_val: str, menses_
     )
     client = OpenAI(api_key=api_key, base_url=BASE_URL)
     model_messages = build_followup_model_messages(summary=summary, analysis_text=st.session_state.final_output)
-    with st.chat_message("assistant"):
+    with st.chat_message("assistant", avatar=role_avatar("assistant")):
         output = st.write_stream(stream_chat_completion(client, model_messages))
     append_message("assistant", output)
     st.session_state.followup_messages.append({"role": "assistant", "content": output})
     st.rerun()
 
 
-# 进入某一阶段时，先把“问题”以 assistant 气泡抛出（只抛一次）
+# --- 问诊阶段驱动逻辑 ---
+
+# 1. 自动抛出问题：根据当前 stage 索引，检查是否需要向对话框发送 assistant 提问
 appended_prompt = False
 if st.session_state.stage == 0 and "q1" not in st.session_state.asked:
     append_message(
         "assistant",
-        "**请先简单描述你最主要的不适症状**",
+        "为了更好地理解你的情况，我们先从最主要的不适开始：\n\n"
+        "**请用一两句话描述你现在最主要的不适症状**\n\n"
+        "如果不确定从哪里说起，也可以按“什么时候开始—哪里不舒服—程度如何—有什么诱因/缓解”来描述。",
     )
     st.session_state.asked.add("q1")
     appended_prompt = True
 
+# 处理阶段 1-5 (预设问答)
 if st.session_state.stage in (1, 2, 3, 4, 5):
     q = QUESTIONS[st.session_state.stage - 1]
     appended_prompt = ensure_question_asked(q) or appended_prompt
 
+# 处理阶段 6 (最后补充)
 if st.session_state.stage == 6 and not st.session_state.generated and "q7" not in st.session_state.asked:
     append_message(
         "assistant",
-        "**补充说明（可选）**\n\n是否还有你觉得重要、但前面没问到的情况？如：饮食习惯、作息变化、近期情绪事件等",
+        "谢谢你的配合。最后还有一个可选的补充，能帮助我把建议做得更贴合：\n\n"
+        "**是否还有你觉得重要、但前面没问到的情况？**\n\n"
+        "你可以在下方输入框简单补充一下。",
     )
     st.session_state.asked.add("q7")
     appended_prompt = True
 
+# 阶段 7 (分析完成后的开场白)
 if st.session_state.stage >= 7 and st.session_state.generated and "postchat" not in st.session_state.asked:
-    append_message("assistant", "分析已完成。你可以继续提问，我会结合前面的信息回答。")
+    append_message("assistant", "分析已完成。接下来你可以放心继续提问，我会结合前面的信息尽量讲清楚、讲明白。")
     st.session_state.asked.add("postchat")
     appended_prompt = True
 
+# 若新抛出了消息，刷新页面以确保消息立即显示
 if appended_prompt:
-    # 先写入问题气泡，再 rerun，让“问题”不会延迟到下一题才出现
     st.rerun()
 
+# 2. 渲染历史：展示所有已存入 messages 的对话内容
 render_history()
 
-# 分析完成后：提供常见问题引导继续对话
+# 3. 引导交互：在特定阶段提供按钮或特殊提示
+# 分析完成后展示 FAQ 建议
 preset_q: str | None = None
 if st.session_state.stage >= 7 and st.session_state.generated:
     with st.container(border=True):
@@ -394,7 +485,7 @@ if st.session_state.stage >= 7 and st.session_state.generated:
 if preset_q:
     run_followup_query(user_text=preset_q, age_val=int(age), gender_val=gender, menses_val=menses or "")
 
-# 问题阶段：展示快捷选项（仍是同一页聊天气泡样式，输入框固定在底部）
+# 阶段 1-5 展示快捷选项按钮
 if st.session_state.stage in (1, 2, 3, 4, 5):
     q = QUESTIONS[st.session_state.stage - 1]
     with st.container(border=True):
@@ -403,6 +494,7 @@ if st.session_state.stage in (1, 2, 3, 4, 5):
             if cols[i].button(opt, key=f"{q.qid}_opt_{i}", use_container_width=True):
                 st.session_state.answers[q.qid] = opt
                 append_message("user", opt)
+                # 处理“直接分析”逻辑或推进到下一阶段
                 if opt == ANALYZE_NOW:
                     st.session_state.stage = 6
                 else:
@@ -411,15 +503,15 @@ if st.session_state.stage in (1, 2, 3, 4, 5):
                         st.session_state.stage = 6
                 st.rerun()
 
-# 生成分析按钮（阶段6才显示；分析完成后不再显示）
+# 阶段 6 展示生成分析报告按钮
 if st.session_state.stage == 6 and not st.session_state.generated:
     api_key = get_deepseek_api_key()
     if not api_key:
         st.warning("未检测到 DeepSeek API Key。请在左侧栏输入，或在 `.streamlit/secrets.toml` 中配置：`DEEPSEEK_API_KEY=\"你的key\"`。")
 
-    col_a, col_b = st.columns([1, 1])
-    start_clicked = col_a.button("开始分析", type="primary", use_container_width=True, disabled=not bool(api_key), key="start_analysis")
+    start_clicked = st.button("开始分析", type="primary", use_container_width=True, disabled=not bool(api_key), key="start_analysis")
     if start_clicked and api_key:
+        # 汇总信息并调用 AI 生成深度分析报告
         summary = build_structured_summary(
             age=int(age) if age else None,
             gender=gender,
@@ -428,6 +520,7 @@ if st.session_state.stage == 6 and not st.session_state.generated:
             q7_extra=st.session_state.q7_extra,
         )
 
+        # 危险词检测
         all_text = "\n".join(
             [
                 st.session_state.q1_main,
@@ -452,7 +545,8 @@ if st.session_state.stage == 6 and not st.session_state.generated:
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": "请基于以下信息生成分析与建议：\n\n" + summary},
         ]
-        with st.chat_message("assistant"):
+        # 流式展示生成结果
+        with st.chat_message("assistant", avatar=role_avatar("assistant")):
             output = st.write_stream(stream_chat_completion(client, model_messages))
         append_message("assistant", output)
         st.session_state.final_output = output
@@ -461,11 +555,9 @@ if st.session_state.stage == 6 and not st.session_state.generated:
         st.session_state.followup_messages = []
         st.rerun()
 
-    if col_b.button("重新分析（清空聊天）", use_container_width=True, key="reset_stage6"):
-        reset_state()
-        st.rerun()
+# --- 底部固定对话输入处理：处理用户在输入框的手动输入 ---
 
-# 底部固定输入框：同一个 chat_input，根据阶段决定语义
+# 根据当前阶段（stage）动态调整输入框占位符
 placeholder = "请输入…"
 if st.session_state.stage == 0:
     placeholder = "如：最近总是疲劳、胃口差，饭后腹胀，睡眠也不好"
@@ -473,7 +565,7 @@ elif st.session_state.stage in (1, 2, 3, 4, 5):
     q = QUESTIONS[st.session_state.stage - 1]
     placeholder = f"若无合适选项，您也可以直接输入（如：{q.detail_placeholder}）"
 elif st.session_state.stage == 6 and not st.session_state.generated:
-    placeholder = "若无合适选项，您也可以直接输入"
+    placeholder = "如：饮食习惯、作息变化、近期情绪事件等。"
 elif st.session_state.stage >= 7 and st.session_state.generated:
     placeholder = "继续提问"
 
@@ -483,14 +575,14 @@ if user_text:
     if not user_text:
         st.stop()
 
-    # 主诉
+    # 处理阶段 0：主诉（用户第一次输入症状）
     if st.session_state.stage == 0:
         st.session_state.q1_main = user_text
         append_message("user", user_text)
         st.session_state.stage = 1
         st.rerun()
 
-    # 问题2-6：直接输入作为该题回答
+    # 处理阶段 1-5：处理用户对预设问诊问题的文本输入（自定义回答）
     if st.session_state.stage in (1, 2, 3, 4, 5):
         q = QUESTIONS[st.session_state.stage - 1]
         st.session_state.answers[q.qid] = user_text
@@ -500,13 +592,13 @@ if user_text:
             st.session_state.stage = 6
         st.rerun()
 
-    # 问题7：补充说明（可选）
+    # 处理阶段 6：补充说明（分析报告生成前的最后补充）
     if st.session_state.stage == 6 and not st.session_state.generated:
         st.session_state.q7_extra = user_text
         append_message("user", user_text)
         st.rerun()
 
-    # 分析后自由对话：直接与 LLM 对话
+    # 处理阶段 7：分析后自由对话（直接与模型进行多轮互动）
     if st.session_state.stage >= 7 and st.session_state.generated:
         run_followup_query(user_text=user_text, age_val=int(age), gender_val=gender, menses_val=menses or "")
 
